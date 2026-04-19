@@ -47,9 +47,16 @@ html, body, [data-testid="stApp"] {
     font-family: 'Outfit', sans-serif !important;
 }
 
-#MainMenu, footer, header { visibility: hidden !important; }
+#MainMenu, footer { display: none !important; }
+header { visibility: hidden !important; }
 [data-testid="stDeployButton"] { display: none !important; }
-[data-testid="collapsedControl"] { visibility: visible !important; }
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+header button,
+header svg {
+    visibility: visible !important;
+    display: flex !important;
+}
 
 [data-testid="stSidebar"] {
     background: #ffffff !important;
