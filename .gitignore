@@ -1,0 +1,11 @@
+# Secrets — NE JAMAIS publier ce fichier !
+.streamlit/secrets.toml
+
+# Données locales
+budget_data.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
