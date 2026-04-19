@@ -49,6 +49,7 @@ html, body, [data-testid="stApp"] {
 
 #MainMenu, footer, header { visibility: hidden !important; }
 [data-testid="stDeployButton"] { display: none !important; }
+[data-testid="collapsedControl"] { visibility: visible !important; }
 
 [data-testid="stSidebar"] {
     background: #ffffff !important;
