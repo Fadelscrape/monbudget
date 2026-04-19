@@ -450,7 +450,7 @@ def empty_month():
         "revenus": [],
         "depenses": [],
         "epargne": {"transfere": False, "montant": 0},
-        "dime": {"payee": False, "montant": 0},
+        "dime_versements": [],
     }
 
 def calc_enveloppes(revenu):
@@ -552,6 +552,16 @@ def load_data():
     data.setdefault("historique", {})
     data.setdefault("prets", [])
     data.setdefault("objectif_epargne", 0)
+    data.setdefault("dettes", [])
+
+    # ── Migration dîme → versements ──
+    for mois_k, mois_d in data["historique"].items():
+        if "dime_versements" not in mois_d:
+            dime_old = mois_d.get("dime", {})
+            if dime_old.get("payee") and dime_old.get("montant", 0) > 0:
+                mois_d["dime_versements"] = [{"montant": float(dime_old["montant"]), "date": mois_k + "-01", "note": "Migré"}]
+            else:
+                mois_d["dime_versements"] = []
 
     # Garantir que le mois actuel existe
     if data["mois_actuel"] not in data["historique"]:
@@ -626,6 +636,37 @@ total_prets_en_cours   = sum(p["montant"] for p in prets_en_cours)
 total_prets_recuperes  = sum(p["montant"] for p in prets_rembourses)
 
 today = date.today()
+
+# Dettes (globales)
+dettes = data.get("dettes", [])
+for d in dettes:
+    rem = sum(v["montant"] for v in d.get("versements", []))
+    d["_rembourse"]   = rem
+    d["_restant"]     = d["montant_total"] - rem
+    d["_progression"] = (rem / d["montant_total"] * 100) if d["montant_total"] > 0 else 0
+    d["_soldee"]      = d["_restant"] <= 0
+
+dettes_en_cours      = [d for d in dettes if not d["_soldee"]]
+dettes_soldees       = [d for d in dettes if d["_soldee"]]
+total_dettes_restant = sum(d["_restant"] for d in dettes_en_cours)
+total_dettes_rem     = sum(d["_rembourse"] for d in dettes_en_cours)
+
+prochaine_echeance_dette = None
+for _d in dettes_en_cours:
+    try:
+        _ech = date.fromisoformat(_d["date_echeance"])
+        if prochaine_echeance_dette is None or _ech < prochaine_echeance_dette:
+            prochaine_echeance_dette = _ech
+    except (ValueError, KeyError):
+        pass
+
+# Dîme versements
+dime_versements = mois_data.get("dime_versements", [])
+dime_objectif   = enveloppes["dime"]
+dime_paye_total = sum(v["montant"] for v in dime_versements)
+dime_restante   = max(0, dime_objectif - dime_paye_total)
+dime_complete   = dime_paye_total >= dime_objectif and dime_objectif > 0
+dime_prog_pct   = min(100, (dime_paye_total / dime_objectif * 100)) if dime_objectif > 0 else 0
 
 # ═══════════════════════════════════════════════
 # 9. SIDEBAR
@@ -812,6 +853,14 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
 
+    if total_dettes_restant > 0:
+        st.markdown(f"""
+        <div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:10px;
+                    padding:0.5rem 0.8rem;font-size:0.82rem;color:#991b1b;margin-top:0.4rem">
+            💳 Dettes restantes : <strong>{fmt(total_dettes_restant)}</strong>
+        </div>
+        """, unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown(
         "<div style='font-size:0.75rem;color:#64748b;text-align:center'>Budget sauvegardé localement 🔒</div>",
@@ -833,8 +882,8 @@ if st.session_state.get("migrated"):
 # ═══════════════════════════════════════════════
 # 10. TABS PRINCIPALES
 # ═══════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Dashboard", "💸 Dépenses", "🏦 Épargne", "🙏 Dîme", "💸 Prêts", "💡 Conseils"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📊 Dashboard", "💸 Dépenses", "🏦 Épargne", "🙏 Dîme", "💸 Prêts", "💳 Dettes", "💡 Conseils"
 ])
 
 # ═══════════════════════════════════════════════
@@ -1313,69 +1362,144 @@ with tab4:
         unsafe_allow_html=True,
     )
 
-    dime_data  = mois_data.get("dime", {"payee": False, "montant": 0})
-    nb_dimes   = sum(1 for k in data["historique"] if data["historique"][k].get("dime", {}).get("payee"))
-    total_dimes = sum(
-        data["historique"][k].get("dime", {}).get("montant", 0)
-        for k in data["historique"]
-        if data["historique"][k].get("dime", {}).get("payee")
-    )
+    # Garantir la clé
+    if "dime_versements" not in mois_data:
+        mois_data["dime_versements"] = []
 
-    d1, d2 = st.columns(2)
-    with d1:
+    # ── KPI Cards ──
+    dk1, dk2, dk3, dk4 = st.columns(4)
+    with dk1:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-label">🙏 Dîme du mois</div>
-            <div class="kpi-value" style="color:#d97706">{fmt(enveloppes['dime'])}</div>
+            <div class="kpi-label">🎯 Objectif dîme</div>
+            <div class="kpi-value" style="color:#d97706">{fmt(dime_objectif)}</div>
             <div class="kpi-sub">10% de {fmt(revenu_total)}</div>
         </div>
         """, unsafe_allow_html=True)
-    with d2:
+    with dk2:
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-label">📊 Total dîmes versées</div>
-            <div class="kpi-value" style="color:#4f46e5">{fmt(total_dimes)}</div>
-            <div class="kpi-sub">{nb_dimes} mois fidèle(s) 🙌</div>
+            <div class="kpi-label">✅ Total versé</div>
+            <div class="kpi-value" style="color:#059669">{fmt(dime_paye_total)}</div>
+            <div class="kpi-sub">{len(dime_versements)} versement(s)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with dk3:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">⏳ Reste à payer</div>
+            <div class="kpi-value" style="color:#dc2626">{fmt(dime_restante)}</div>
+            <div class="kpi-sub">{'Dîme complète 🎉' if dime_complete else 'À compléter'}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with dk4:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">📈 Progression</div>
+            <div class="kpi-value" style="color:#4f46e5">{dime_prog_pct:.0f}%</div>
+            <div class="kpi-sub">Du mois en cours</div>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>✅ Statut du mois</div>", unsafe_allow_html=True)
-    if not est_archive:
-        dime_payee = st.checkbox(
-            f"🙏 Dîme payée ce mois ({mois_label_vue})",
-            value=dime_data.get("payee", False),
-            key="dime_check",
-        )
-        if dime_payee != dime_data.get("payee", False):
-            dime_data["payee"]   = dime_payee
-            dime_data["montant"] = enveloppes["dime"]
-            mois_data["dime"]    = dime_data
-            save_data(data)
-            if dime_payee:
-                st.success(f"🙏 Dîme de {fmt(enveloppes['dime'])} marquée comme payée. Béni sois-tu ! ✨")
-            else:
-                st.info("Dîme marquée comme non payée.")
-            st.rerun()
+    # ── Badge statut ──
+    if dime_complete:
+        st.markdown('<span class="badge badge-green" style="font-size:0.9rem;padding:4px 14px">✅ Dîme complète</span>', unsafe_allow_html=True)
     else:
-        statut_dm = "✅ Payée" if dime_data.get("payee") else "⏳ En attente"
-        c_dm      = "#d97706" if dime_data.get("payee") else "#64748b"
-        st.markdown(f"<span style='color:{c_dm};font-weight:600'>{statut_dm}</span>", unsafe_allow_html=True)
+        st.markdown(f'<span class="badge badge-amber" style="font-size:0.9rem;padding:4px 14px">⏳ En cours ({dime_prog_pct:.0f}%)</span>', unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>📋 Historique des dîmes</div>", unsafe_allow_html=True)
+    # ── Barre de progression ──
+    bar_color_dime = "#059669" if dime_complete else "#d97706"
+    st.markdown(f"""
+    <div class="prog-wrap" style="margin-top:1rem">
+        <div class="prog-header">
+            <span class="prog-name">🙏 Progression de la dîme</span>
+            <span class="prog-pct" style="background:#fef3c7;color:#92400e">{fmt(dime_paye_total)} / {fmt(dime_objectif)}</span>
+        </div>
+        <div class="prog-bar-bg" style="height:16px">
+            <div class="prog-bar-fill" style="width:{dime_prog_pct:.1f}%;background:{bar_color_dime}"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Formulaire ajout versement ──
+    if not est_archive:
+        st.markdown("<div class='section-title'>➕ Ajouter un versement de dîme</div>", unsafe_allow_html=True)
+        dv1, dv2 = st.columns(2)
+        with dv1:
+            dv_montant = st.number_input("Montant versé", min_value=0.0, step=500.0, format="%.0f", key="dv_montant", label_visibility="collapsed")
+            dv_note    = st.text_input("Note (ex: Église, pasteur...)", key="dv_note", placeholder="Note optionnelle")
+        with dv2:
+            dv_date = st.date_input("Date du versement", value=date.today(), key="dv_date")
+
+        if st.button("🙏 Ajouter ce versement de dîme", use_container_width=True):
+            if dv_montant > 0:
+                mois_data["dime_versements"].append({
+                    "montant": float(dv_montant),
+                    "date":    str(dv_date),
+                    "note":    dv_note.strip(),
+                })
+                save_data(data)
+                new_total = sum(v["montant"] for v in mois_data["dime_versements"])
+                if new_total >= dime_objectif > 0:
+                    st.balloons()
+                    st.success("🎉 Dîme du mois complète ! Que Dieu bénisse !")
+                else:
+                    st.success(f"✅ Versement de {fmt(dv_montant)} enregistré !")
+                st.rerun()
+            else:
+                st.error("⚠️ Le montant doit être supérieur à 0.")
+
+    # ── Historique versements du mois ──
+    st.markdown("<div class='section-title'>📋 Versements du mois</div>", unsafe_allow_html=True)
+    if dime_versements:
+        for i, v in enumerate(dime_versements):
+            vc1, vc2 = st.columns([6, 1])
+            with vc1:
+                note_txt = f" · {v['note']}" if v.get("note") else ""
+                st.markdown(f"""
+                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
+                            padding:0.5rem 0.9rem;font-size:0.85rem;margin-bottom:0.3rem;
+                            display:flex;justify-content:space-between;align-items:center">
+                    <span style="color:#64748b">{v.get('date','?')}{note_txt}</span>
+                    <span style="font-family:'Space Mono',monospace;font-weight:700;color:#d97706">{fmt(v.get('montant',0))}</span>
+                </div>
+                """, unsafe_allow_html=True)
+            with vc2:
+                if not est_archive:
+                    if st.button("🗑️", key=f"del_dv_{i}"):
+                        mois_data["dime_versements"].pop(i)
+                        save_data(data)
+                        st.rerun()
+        st.markdown(
+            f"<div style='text-align:right;font-weight:700;color:#d97706;margin-top:0.3rem'>"
+            f"Total : {fmt(dime_paye_total)}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Aucun versement ce mois. Ajoutez votre premier versement de dîme !")
+
+    # ── Historique mensuel ──
+    st.markdown("<div class='section-title'>📊 Historique mensuel des dîmes</div>", unsafe_allow_html=True)
     for mois_k in sorted(data["historique"].keys(), reverse=True):
-        dm  = data["historique"][mois_k].get("dime", {})
-        yr, mo = map(int, mois_k.split("-"))
-        lbl_m  = f"{MOIS_FR.get(mo, mo)} {yr}"
-        statut = "✅ Payée" if dm.get("payee") else "⏳ En attente"
-        c_s    = "#d97706" if dm.get("payee") else "#64748b"
-        m_txt  = fmt(dm.get("montant", 0))
+        mois_d_hist = data["historique"][mois_k]
+        dv_hist  = mois_d_hist.get("dime_versements", [])
+        total_h  = sum(v["montant"] for v in dv_hist)
+        rev_h    = sum(r["montant"] for r in mois_d_hist.get("revenus", []))
+        obj_h    = rev_h * 0.10
+        comp_h   = total_h >= obj_h and obj_h > 0
+        yr, mo   = map(int, mois_k.split("-"))
+        lbl_m    = f"{MOIS_FR.get(mo, mo)} {yr}"
+        statut_h = "✅ Complète" if comp_h else ("⏳ En cours" if total_h > 0 else "❌ Non versée")
+        c_h      = "#059669" if comp_h else ("#d97706" if total_h > 0 else "#64748b")
         st.markdown(f"""
         <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:0.8rem 1rem;
-                    margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;
+                    margin-bottom:0.4rem;display:flex;justify-content:space-between;align-items:center;
                     box-shadow:0 1px 3px rgba(15,23,42,0.04)">
             <span style="font-weight:600;color:#0f172a">{lbl_m}</span>
-            <span style="font-family:'Space Mono',monospace;color:#d97706;font-weight:700">{m_txt}</span>
-            <span style="color:{c_s};font-size:0.85rem;font-weight:600">{statut}</span>
+            <span style="font-family:'Space Mono',monospace;color:#d97706;font-weight:700">{fmt(total_h)}</span>
+            <span style="color:{c_h};font-size:0.85rem;font-weight:600">{statut_h}</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1546,9 +1670,215 @@ with tab5:
         )
 
 # ═══════════════════════════════════════════════
-# TAB 6 — CONSEILS
+# TAB 6 — DETTES
 # ═══════════════════════════════════════════════
 with tab6:
+    st.markdown(
+        "<div style='font-size:1.6rem;font-weight:900;margin-bottom:1rem;color:#0f172a'>"
+        "💳 Gestion des <span style='color:#dc2626'>Dettes</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Alertes échéances ──
+    for _ad in dettes_en_cours:
+        try:
+            _ech_d = date.fromisoformat(_ad["date_echeance"])
+            _delta_d = (_ech_d - today).days
+            if _delta_d < 0:
+                st.error(f"🚨 Dette envers **{_ad['creancier']}** en retard de {-_delta_d} jour(s) ! Reste : {fmt(_ad['_restant'])}")
+            elif _delta_d <= 7:
+                st.warning(f"⚠️ **{_ad['creancier']}** : échéance dans {_delta_d} jour(s) ! Reste : {fmt(_ad['_restant'])}")
+        except (ValueError, KeyError):
+            pass
+
+    # ── KPI Cards ──
+    kd1, kd2, kd3, kd4 = st.columns(4)
+    with kd1:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">💳 Total dû</div>
+            <div class="kpi-value" style="color:#dc2626">{fmt(sum(d['montant_total'] for d in dettes_en_cours))}</div>
+            <div class="kpi-sub">Dettes en cours</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with kd2:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">✅ Total remboursé</div>
+            <div class="kpi-value" style="color:#059669">{fmt(total_dettes_rem)}</div>
+            <div class="kpi-sub">Sur dettes en cours</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with kd3:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">📋 Dettes en cours</div>
+            <div class="kpi-value" style="color:#4f46e5">{len(dettes_en_cours)}</div>
+            <div class="kpi-sub">{len(dettes_soldees)} soldée(s)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with kd4:
+        proch_txt = prochaine_echeance_dette.strftime("%d/%m/%Y") if prochaine_echeance_dette else "—"
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">📅 Prochaine échéance</div>
+            <div class="kpi-value" style="font-size:1.1rem;color:#d97706">{proch_txt}</div>
+            <div class="kpi-sub">Date limite</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Formulaire nouvelle dette ──
+    st.markdown("<div class='section-title'>➕ Nouvelle dette</div>", unsafe_allow_html=True)
+    if st.session_state.pop("_reset_dette_form", False):
+        for _k in ["nd_creancier","nd_montant","nd_echeance","nd_note"]:
+            st.session_state.pop(_k, None)
+
+    with st.expander("Enregistrer une nouvelle dette", expanded=False):
+        ndf1, ndf2 = st.columns(2)
+        with ndf1:
+            nd_creancier = st.text_input("👤 Créancier (à qui je dois ?)", key="nd_creancier")
+            nd_montant   = st.number_input("💰 Montant total dû", min_value=0.0, step=500.0, format="%.0f", key="nd_montant")
+        with ndf2:
+            nd_echeance = st.date_input("📅 Date d'échéance", key="nd_echeance")
+            nd_note     = st.text_area("📝 Note / raison", key="nd_note")
+
+        if st.button("➕ Enregistrer la dette", use_container_width=True):
+            if nd_creancier.strip() and nd_montant > 0:
+                data["dettes"].append({
+                    "id":            f"dette_{int(datetime.now().timestamp() * 1000)}",
+                    "creancier":     nd_creancier.strip(),
+                    "montant_total": float(nd_montant),
+                    "date_creation": str(today),
+                    "date_echeance": str(nd_echeance),
+                    "note":          nd_note.strip(),
+                    "versements":    [],
+                })
+                save_data(data)
+                st.success(f"✅ Dette de {fmt(nd_montant)} envers **{nd_creancier}** enregistrée !")
+                st.session_state["_reset_dette_form"] = True
+                st.rerun()
+            else:
+                st.error("⚠️ Renseignez le créancier et un montant supérieur à 0.")
+
+    # ── Dettes en cours ──
+    st.markdown("<div class='section-title'>⏳ Dettes en cours</div>", unsafe_allow_html=True)
+
+    if dettes_en_cours:
+        for d in dettes_en_cours:
+            try:
+                ech_d  = date.fromisoformat(d["date_echeance"])
+                delta_d = (ech_d - today).days
+                if delta_d > 7:
+                    sc, st_txt = "#059669", f"✅ {delta_d} jours restants"
+                elif delta_d >= 0:
+                    sc, st_txt = "#d97706", f"⚠️ {delta_d} jour(s) restant(s)"
+                else:
+                    sc, st_txt = "#dc2626", f"🚨 En retard de {-delta_d} j"
+            except (ValueError, KeyError):
+                sc, st_txt = "#64748b", "Date inconnue"
+
+            prog_d = d["_progression"]
+            bar_c  = "#dc2626" if prog_d < 30 else ("#d97706" if prog_d < 70 else "#059669")
+            note_h = f'<div style="font-size:0.78rem;color:#64748b;margin-top:0.2rem">📝 {d["note"]}</div>' if d.get("note") else ""
+
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:1rem 1.2rem;
+                        margin-bottom:0.5rem;border-left:4px solid {sc};box-shadow:0 2px 8px rgba(15,23,42,0.06)">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">
+                    <div style="flex:1">
+                        <div style="font-size:1rem;font-weight:700;color:#0f172a">{d['creancier']}</div>
+                        <div style="font-family:'Space Mono',monospace;font-size:1.2rem;font-weight:700;color:#dc2626;margin:0.1rem 0">
+                            Reste : {fmt(d['_restant'])}
+                        </div>
+                        <div style="font-size:0.78rem;color:#64748b">
+                            Total : {fmt(d['montant_total'])} · Remboursé : {fmt(d['_rembourse'])} · Échéance : {d['date_echeance']}
+                        </div>
+                        {note_h}
+                        <div style="margin-top:0.5rem">
+                            <div style="background:#e2e8f0;border-radius:999px;height:8px;overflow:hidden">
+                                <div style="width:{min(prog_d,100):.1f}%;height:100%;border-radius:999px;background:{bar_c}"></div>
+                            </div>
+                            <div style="font-size:0.7rem;color:#64748b;margin-top:0.2rem">{prog_d:.1f}% remboursé</div>
+                        </div>
+                    </div>
+                    <div style="color:{sc};font-size:0.8rem;font-weight:600;text-align:right;white-space:nowrap">{st_txt}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Versements déjà faits
+            if d.get("versements"):
+                with st.expander(f"📋 {len(d['versements'])} versement(s) enregistré(s)", expanded=False):
+                    for v in d["versements"]:
+                        vn = f" · {v['note']}" if v.get("note") else ""
+                        st.markdown(
+                            f"<div style='font-size:0.82rem;color:#64748b;padding:0.2rem 0'>"
+                            f"📅 {v.get('date','?')}{vn} — "
+                            f"<b style='color:#059669'>{fmt(v.get('montant',0))}</b></div>",
+                            unsafe_allow_html=True,
+                        )
+
+            # Mini-formulaire versement
+            st.markdown(f"<div style='font-size:0.85rem;font-weight:600;color:#64748b;margin-top:0.4rem'>💸 Ajouter un versement</div>", unsafe_allow_html=True)
+            vc1, vc2 = st.columns([2, 1])
+            with vc1:
+                v_mont = st.number_input("Montant", min_value=0.0, step=500.0, format="%.0f",
+                                         key=f"v_{d['id']}", label_visibility="collapsed")
+                v_note_d = st.text_input("Note versement", key=f"n_{d['id']}", placeholder="Note (optionnel)")
+            with vc2:
+                v_date_d = st.date_input("Date", value=date.today(), key=f"d_{d['id']}", label_visibility="collapsed")
+
+            if st.button("💸 Ajouter versement", key=f"btn_{d['id']}"):
+                if v_mont > 0:
+                    for _det in data["dettes"]:
+                        if _det["id"] == d["id"]:
+                            _det["versements"].append({
+                                "montant": float(v_mont),
+                                "date":    str(v_date_d),
+                                "note":    v_note_d.strip(),
+                            })
+                            break
+                    save_data(data)
+                    new_rem = sum(v["montant"] for v in next(x for x in data["dettes"] if x["id"] == d["id"])["versements"])
+                    if d["montant_total"] - new_rem <= 0:
+                        st.success(f"🎉 Dette envers **{d['creancier']}** entièrement soldée !")
+                    else:
+                        st.success(f"✅ Versement de {fmt(v_mont)} enregistré !")
+                    st.rerun()
+                else:
+                    st.error("⚠️ Montant invalide.")
+
+            st.markdown("<hr style='margin:0.8rem 0;border-color:#f1f5f9'>", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            "<div style='color:#64748b;text-align:center;padding:2rem'>✅ Aucune dette en cours. Bravo !</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Dettes soldées ──
+    if dettes_soldees:
+        st.markdown("<div class='section-title'>✅ Dettes soldées</div>", unsafe_allow_html=True)
+        for d in sorted(dettes_soldees, key=lambda x: x.get("date_echeance", ""), reverse=True):
+            st.markdown(f"""
+            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:0.6rem 1rem;
+                        margin-bottom:0.4rem;display:flex;justify-content:space-between;align-items:center">
+                <span style="font-weight:600;color:#0f172a">{d['creancier']}</span>
+                <span style="font-family:'Space Mono',monospace;color:#059669;font-weight:700">{fmt(d['montant_total'])}</span>
+                <span style="font-size:0.78rem;color:#64748b">soldée ✅</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+    if st.button("🗑️ Supprimer une dette soldée", key="del_dettes_soldees"):
+        data["dettes"] = [d for d in data["dettes"] if not (d["montant_total"] - sum(v["montant"] for v in d.get("versements",[])) <= 0)]
+        save_data(data)
+        st.rerun()
+
+# ═══════════════════════════════════════════════
+# TAB 7 — CONSEILS
+# ═══════════════════════════════════════════════
+with tab7:
     st.markdown(
         "<div style='font-size:1.6rem;font-weight:900;margin-bottom:1rem;color:#0f172a'>"
         "💡 <span style='color:#2563eb'>Conseils Intelligents</span></div>",
@@ -1596,15 +1926,14 @@ with tab6:
             tips.append(("💡", f"{cat} : surplus de {fmt(surplus)}", conseil, "#4f46e5"))
 
     ep_mois   = mois_data.get("epargne", {})
-    dime_mois = mois_data.get("dime", {})
 
     if not ep_mois.get("transfere") and revenu_total > 0:
         tips.append(("🏦", "Épargne non encore transférée",
                      f"N'oubliez pas de transférer vos {fmt(enveloppes['epargne'])} d'épargne ce mois ! Payez-vous en premier.", "#0891b2"))
 
-    if not dime_mois.get("payee") and revenu_total > 0:
-        tips.append(("🙏", "Dîme non encore versée",
-                     f"Pensez à verser votre dîme de {fmt(enveloppes['dime'])}. La générosité attire l'abondance.", "#d97706"))
+    if not dime_complete and revenu_total > 0:
+        tips.append(("🙏", "Dîme non encore complète",
+                     f"Pensez à compléter votre dîme de {fmt(dime_objectif)} ({dime_prog_pct:.0f}% versé). La générosité attire l'abondance.", "#d97706"))
 
     prets_en_retard = [p for p in prets_en_cours if p.get("date_echeance", "9999") < str(today)]
     if prets_en_retard:
@@ -1657,8 +1986,8 @@ with tab6:
         """, unsafe_allow_html=True)
 
     with rs3:
-        note_dime = "✅ Versée" if dime_mois.get("payee") else "⏳ À faire"
-        c_dime    = "#d97706" if dime_mois.get("payee") else "#64748b"
+        note_dime = "✅ Complète" if dime_complete else f"⏳ {dime_prog_pct:.0f}%"
+        c_dime    = "#059669" if dime_complete else "#d97706"
         st.markdown(f"""
         <div style="{card_style}">
             <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.3rem">DÎME</div>
