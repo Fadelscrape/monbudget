@@ -815,6 +815,11 @@ with st.sidebar:
     st.markdown("<div class='section-title'>💰 Mes revenus du mois</div>", unsafe_allow_html=True)
 
     if not est_archive:
+        if st.session_state.pop("_reset_revenu_form", False):
+            st.session_state["new_revenu_montant"] = 0.0
+            st.session_state["new_revenu_source"]  = ""
+            st.session_state.pop("new_revenu_date", None)
+
         new_mont   = st.number_input("Montant", min_value=0.0, step=500.0, format="%.0f",
                                      key="new_revenu_montant", label_visibility="collapsed")
         new_source = st.text_input("Source", placeholder="Salaire, Freelance, Vente...",
@@ -832,8 +837,7 @@ with st.sidebar:
                 save_data(data)
                 total_apres = sum(r["montant"] for r in mois_data["revenus"])
                 st.success(f"✅ Revenu ajouté ! Total : {fmt(total_apres)}")
-                for k in ["new_revenu_montant", "new_revenu_source", "new_revenu_date"]:
-                    st.session_state.pop(k, None)
+                st.session_state["_reset_revenu_form"] = True
                 st.rerun()
             else:
                 st.error("⚠️ Le montant doit être supérieur à 0.")
