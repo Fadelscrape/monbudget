@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import json
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 # ─────────────────────────────────────────────
 # 1. CONFIG PAGE
@@ -282,13 +282,47 @@ hr { border-color: #e2e8f0 !important; }
 @media (max-width: 768px) {
     .kpi-value { font-size: 1.3rem; }
     .kpi-card { padding: 1rem; }
-}
-@media (max-width: 640px) {
-    [data-testid="column"] { width: 100% !important; min-width: 100% !important; flex: 1 1 100% !important; }
-    .kpi-value { font-size: 1.1rem; }
-    [data-testid="stTabs"] [role="tab"] { font-size: 0.72rem; padding: 0.3rem 0.4rem; }
-    .prog-pct { font-size: 0.65rem; }
+
+    [data-testid="stSidebar"] {
+        width: 0px !important;
+        min-width: 0px !important;
+    }
+
+    .stButton > button {
+        min-height: 48px !important;
+        font-size: 16px !important;
+        padding: 12px 20px !important;
+    }
+
+    .stTextInput, .stNumberInput, .stSelectbox, .stDateInput {
+        width: 100% !important;
+    }
+    .stTextInput > div > div > input,
+    .stNumberInput > div > div > input {
+        font-size: 16px !important;
+        min-height: 48px !important;
+    }
+
+    div[data-testid="column"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        white-space: nowrap !important;
+        min-width: fit-content !important;
+        font-size: 13px !important;
+        padding: 8px 12px !important;
+    }
+
+    .kpi-card { padding: 14px 16px !important; border-radius: 14px !important; }
     .section-title { font-size: 1rem; }
+    .prog-pct { font-size: 0.65rem; }
 }
 
 /* ── Écran de connexion ── */
@@ -451,6 +485,7 @@ def empty_month():
         "depenses": [],
         "epargne": {"transfere": False, "montant": 0},
         "dime_versements": [],
+        "budgets": {cat: 0 for cat in CATEGORIES},
     }
 
 def calc_enveloppes(revenu):
@@ -554,6 +589,14 @@ def load_data():
     data.setdefault("objectif_epargne", 0)
     data.setdefault("dettes", [])
 
+    # ── Migration budgets prévisionnels ──
+    for mois_k, mois_d in data["historique"].items():
+        if "budgets" not in mois_d:
+            mois_d["budgets"] = {cat: 0 for cat in CATEGORIES}
+        else:
+            for cat in CATEGORIES:
+                mois_d["budgets"].setdefault(cat, 0)
+
     # ── Migration dîme → versements ──
     for mois_k, mois_d in data["historique"].items():
         if "dime_versements" not in mois_d:
@@ -636,6 +679,18 @@ total_prets_en_cours   = sum(p["montant"] for p in prets_en_cours)
 total_prets_recuperes  = sum(p["montant"] for p in prets_rembourses)
 
 today = date.today()
+
+# Budgets prévisionnels
+budgets_mois = mois_data.get("budgets", {cat: 0 for cat in CATEGORIES})
+alertes_budget = []
+for _cat, _dep in totaux_cat.items():
+    _bud = budgets_mois.get(_cat, 0)
+    if _bud > 0:
+        _pct_bud = _dep / _bud * 100
+        if _pct_bud >= 100:
+            alertes_budget.append(("error", _cat, _pct_bud, _dep, _bud))
+        elif _pct_bud >= 90:
+            alertes_budget.append(("warning", _cat, _pct_bud, _dep, _bud))
 
 # Dettes (globales)
 dettes = data.get("dettes", [])
@@ -911,6 +966,13 @@ with tab1:
             📂 Consultation archivée — données de {mois_label_vue}
         </div>
         """, unsafe_allow_html=True)
+
+    # ── Alertes budgets ──
+    for _lvl, _cat, _pct_b, _dep_b, _bud_b in alertes_budget:
+        if _lvl == "error":
+            st.error(f"🚨 **{_cat}** : budget DÉPASSÉ de **{fmt(_dep_b - _bud_b)}** ({_pct_b:.0f}% utilisé) !")
+        else:
+            st.warning(f"⚠️ **{_cat}** : tu as utilisé **{_pct_b:.0f}%** de ton budget !")
 
     # ── Alertes prêts en retard ──
     for p in prets_en_cours:
@@ -1199,23 +1261,117 @@ with tab2:
                 else:
                     st.error("⚠️ Le montant doit être supérieur à 0.")
 
-    # ── Filtre catégorie ──
-    st.markdown("<div class='section-title'>🔍 Filtre</div>", unsafe_allow_html=True)
-    filtre_cat = st.selectbox("Catégorie", ["Toutes"] + list(CATEGORIES.keys()), key="f_cat")
+    # ── Budgets prévisionnels ──
+    st.markdown("<div class='section-title'>🎯 Budgets du mois</div>", unsafe_allow_html=True)
+    st.caption("Fixe un maximum par catégorie. L'app t'alertera automatiquement.")
 
-    dep_filtrées = [
-        d for d in mois_data.get("depenses", [])
-        if filtre_cat == "Toutes" or d.get("categorie") == filtre_cat
-    ]
-    dep_filtrées.sort(key=lambda x: x.get("date", ""), reverse=True)
+    with st.expander("📝 Définir / modifier mes budgets", expanded=False):
+        budgets_inputs = {}
+        for cat in CATEGORIES:
+            bc1, bc2, bc3 = st.columns([3, 2, 2])
+            with bc1:
+                st.markdown(f"<div style='padding-top:0.5rem;font-weight:600;font-size:0.9rem'>{cat}</div>", unsafe_allow_html=True)
+            with bc2:
+                budgets_inputs[cat] = st.number_input(
+                    "Budget", min_value=0.0, step=500.0, format="%.0f",
+                    value=float(budgets_mois.get(cat, 0)),
+                    key=f"budget_{cat}", label_visibility="collapsed",
+                )
+            with bc3:
+                dep_c = totaux_cat.get(cat, 0)
+                bud_c = budgets_mois.get(cat, 0)
+                c_dep = "#dc2626" if (bud_c > 0 and dep_c >= bud_c) else ("#d97706" if (bud_c > 0 and dep_c >= bud_c * 0.9) else "#059669")
+                st.markdown(f"<div style='padding-top:0.5rem;font-family:Space Mono,monospace;font-size:0.85rem;color:{c_dep};font-weight:700'>Réel: {fmt(dep_c)}</div>", unsafe_allow_html=True)
+
+        if st.button("💾 Sauvegarder les budgets", use_container_width=True):
+            mois_data["budgets"] = {cat: float(budgets_inputs[cat]) for cat in CATEGORIES}
+            save_data(data)
+            st.success("✅ Budgets sauvegardés !")
+            st.rerun()
+
+    # Barres de progression budgets
+    cats_avec_budget = {cat: bud for cat, bud in budgets_mois.items() if bud > 0}
+    if cats_avec_budget:
+        bp1, bp2 = st.columns(2)
+        for i, (cat, bud_c) in enumerate(cats_avec_budget.items()):
+            dep_c   = totaux_cat.get(cat, 0)
+            pct_c   = dep_c / bud_c * 100 if bud_c > 0 else 0
+            bar_c   = "#dc2626" if pct_c >= 100 else ("#d97706" if pct_c >= 70 else "#059669")
+            bdg_bg  = "#fee2e2" if pct_c >= 100 else ("#fef3c7" if pct_c >= 70 else "#d1fae5")
+            bdg_col = "#991b1b" if pct_c >= 100 else ("#92400e" if pct_c >= 70 else "#065f46")
+            with bp1 if i % 2 == 0 else bp2:
+                st.markdown(f"""
+                <div class="prog-wrap">
+                    <div class="prog-header">
+                        <span class="prog-name" style="font-size:0.82rem">{cat}</span>
+                        <span class="prog-pct" style="background:{bdg_bg};color:{bdg_col}">
+                            {fmt(dep_c)} / {fmt(bud_c)}
+                        </span>
+                    </div>
+                    <div class="prog-bar-bg">
+                        <div class="prog-bar-fill" style="width:{min(pct_c,100):.1f}%;background:{bar_c}"></div>
+                    </div>
+                    <div style="font-size:0.7rem;color:#64748b;margin-top:0.2rem">{pct_c:.1f}% utilisé</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Recherche & Filtres ──
+    st.markdown("<div class='section-title'>🔍 Rechercher & Filtrer</div>", unsafe_allow_html=True)
+
+    sf1, sf2 = st.columns(2)
+    with sf1:
+        search_query = st.text_input("🔍 Recherche", placeholder="Ex: taxi, marché...", key="search_query")
+    with sf2:
+        filter_cat = st.selectbox("📂 Catégorie", ["Toutes"] + list(CATEGORIES.keys()), key="filter_cat")
+
+    sf3, sf4 = st.columns(2)
+    with sf3:
+        sort_by = st.selectbox("↕️ Trier par",
+            ["Date (récent)", "Date (ancien)", "Montant (décroissant)", "Montant (croissant)"],
+            key="sort_by")
+    with sf4:
+        filter_period = st.selectbox("📅 Période",
+            ["Ce mois", "7 derniers jours", "15 derniers jours", "Tout"],
+            key="filter_period")
+
+    # Logique de filtrage
+    dep_filtrées = list(mois_data.get("depenses", []))
+
+    if search_query:
+        q = search_query.lower()
+        dep_filtrées = [d for d in dep_filtrées
+            if q in d.get("description", "").lower() or q in d.get("categorie", "").lower()]
+
+    if filter_cat != "Toutes":
+        dep_filtrées = [d for d in dep_filtrées if d.get("categorie") == filter_cat]
+
+    if filter_period == "7 derniers jours":
+        cutoff = today - timedelta(days=7)
+        dep_filtrées = [d for d in dep_filtrées if date.fromisoformat(d["date"]) >= cutoff]
+    elif filter_period == "15 derniers jours":
+        cutoff = today - timedelta(days=15)
+        dep_filtrées = [d for d in dep_filtrées if date.fromisoformat(d["date"]) >= cutoff]
+
+    if sort_by == "Montant (décroissant)":
+        dep_filtrées.sort(key=lambda x: x["montant"], reverse=True)
+    elif sort_by == "Montant (croissant)":
+        dep_filtrées.sort(key=lambda x: x["montant"])
+    elif sort_by == "Date (ancien)":
+        dep_filtrées.sort(key=lambda x: x.get("date", ""))
+    else:
+        dep_filtrées.sort(key=lambda x: x.get("date", ""), reverse=True)
 
     total_filtre = sum(d["montant"] for d in dep_filtrées)
-    st.markdown(
-        f"<div style='font-size:0.85rem;color:#64748b;margin-bottom:0.8rem'>"
-        f"{len(dep_filtrées)} transaction(s) — Total : "
-        f"<b style='color:#2563eb'>{fmt(total_filtre)}</b></div>",
-        unsafe_allow_html=True,
-    )
+    st.caption(f"{len(dep_filtrées)} dépense(s) trouvée(s) · Total : **{fmt(total_filtre)}**")
+
+    rc1, rc2 = st.columns([3, 1])
+    with rc2:
+        if st.button("🔄 Réinitialiser", use_container_width=True):
+            for _k in ["search_query", "filter_cat", "sort_by", "filter_period"]:
+                st.session_state.pop(_k, None)
+            st.rerun()
 
     if dep_filtrées:
         for dep in dep_filtrées:
@@ -1245,10 +1401,7 @@ with tab2:
                         save_data(data)
                         st.rerun()
     else:
-        st.markdown(
-            "<div style='color:#64748b;text-align:center;padding:3rem'>Aucune dépense pour ce filtre 🌙</div>",
-            unsafe_allow_html=True,
-        )
+        st.info("🔍 Aucune dépense ne correspond à ta recherche.")
 
 # ═══════════════════════════════════════════════
 # TAB 3 — ÉPARGNE
