@@ -283,11 +283,6 @@ hr { border-color: #e2e8f0 !important; }
     .kpi-value { font-size: 1.3rem; }
     .kpi-card { padding: 1rem; }
 
-    [data-testid="stSidebar"] {
-        width: 0px !important;
-        min-width: 0px !important;
-    }
-
     .stButton > button {
         min-height: 48px !important;
         font-size: 16px !important;
