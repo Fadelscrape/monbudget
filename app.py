@@ -1,9 +1,8 @@
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
-import json
-import os
 from datetime import datetime, date, timedelta
+from pymongo import MongoClient
 
 # ─────────────────────────────────────────────
 # 1. CONFIG PAGE
@@ -440,7 +439,26 @@ if not st.session_state.authentifie:
 # ─────────────────────────────────────────────
 # 4. CONSTANTES
 # ─────────────────────────────────────────────
-DATA_FILE = "budget_data.json"
+
+# ── Connexion MongoDB ──
+try:
+    MONGO_URI        = st.secrets["mongodb"]["uri"]
+    MONGO_DATABASE   = st.secrets["mongodb"]["database"]
+    MONGO_COLLECTION = st.secrets["mongodb"]["collection"]
+except Exception:
+    MONGO_URI        = "mongodb+srv://juniorsohou57:MON_NOUVEAU_MDP@cluster0.fgjbh9x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+    MONGO_DATABASE   = "Fadel"
+    MONGO_COLLECTION = "mon_budget"
+
+@st.cache_resource
+def get_mongo_client():
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    return client
+
+def get_collection():
+    client = get_mongo_client()
+    db = client[MONGO_DATABASE]
+    return db[MONGO_COLLECTION]
 
 CATEGORIES = {
     "🏠 Loyer / Logement":   "#2563eb",
@@ -519,13 +537,28 @@ def fmt(valeur, decimales=0):
     return f"{valeur:,.0f}"
 
 # ─────────────────────────────────────────────
-# 5. PERSISTANCE JSON + MIGRATION
+# 5. PERSISTANCE MONGODB + MIGRATION
 # ─────────────────────────────────────────────
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    else:
+    try:
+        col = get_collection()
+        doc = col.find_one({"_id": "budget_principal"})
+        if doc:
+            doc.pop("_id", None)
+            data = doc
+        else:
+            data_defaut = {
+                "_id": "budget_principal",
+                "mois_actuel": datetime.now().strftime("%Y-%m"),
+                "historique": {},
+                "prets": [],
+                "dettes": [],
+            }
+            col.insert_one(data_defaut)
+            data_defaut.pop("_id", None)
+            data = data_defaut
+    except Exception as e:
+        st.error(f"❌ Erreur MongoDB : {e}")
         data = {}
 
     migrated = False
@@ -542,7 +575,6 @@ def load_data():
         old_epargne  = data.get("epargne", {})
         old_dime     = data.get("dime", {})
 
-        # Collecter tous les mois mentionnés
         all_months = set(old_revenus.keys())
         for d in old_depenses:
             m = d.get("mois")
@@ -571,9 +603,9 @@ def load_data():
             }
 
         data = {
-            "mois_actuel":    mois_key_now,
-            "historique":     historique,
-            "prets":          [],
+            "mois_actuel":      mois_key_now,
+            "historique":       historique,
+            "prets":            [],
             "objectif_epargne": data.get("objectif_epargne", 0),
         }
 
@@ -601,15 +633,22 @@ def load_data():
             else:
                 mois_d["dime_versements"] = []
 
-    # Garantir que le mois actuel existe
     if data["mois_actuel"] not in data["historique"]:
         data["historique"][data["mois_actuel"]] = empty_month()
 
     return data, migrated
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        col = get_collection()
+        data_to_save = {"_id": "budget_principal", **data}
+        col.replace_one(
+            {"_id": "budget_principal"},
+            data_to_save,
+            upsert=True,
+        )
+    except Exception as e:
+        st.error(f"❌ Erreur sauvegarde : {e}")
 
 # ─────────────────────────────────────────────
 # 6. SESSION STATE
@@ -731,6 +770,13 @@ with st.sidebar:
         <div class="logo-sub">Règle 70 / 20 / 10</div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Indicateur MongoDB ──
+    try:
+        get_mongo_client().admin.command("ping")
+        st.success("🟢 MongoDB connecté")
+    except Exception:
+        st.error("🔴 MongoDB déconnecté")
 
     # ── Bouton Masquer / Révéler ──
     if masquer:
